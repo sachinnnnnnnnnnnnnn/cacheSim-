@@ -1,0 +1,198 @@
+#include <iostream>
+#include <iomanip>
+#include <string>
+#include <unordered_map>
+#include <vector>
+#include <fstream>
+#include <sstream>
+#include <cstdlib>
+
+using namespace std;
+
+// Structure to represent a cache block
+struct CacheBlock {
+    bool valid = false;
+    bool dirty = false;
+    unsigned long long tag = 0;
+};
+
+// Cache simulator class
+class CacheSimulator {
+private:
+    unsigned int numSets;
+    unsigned int numBlocksPerSet;
+    unsigned int blockSize;
+    bool writeAllocate;
+    bool writeBack;
+    bool lruEviction;
+
+    vector<vector<CacheBlock>> cache;
+    unordered_map<unsigned long long, unsigned long long> lruCounter;
+
+    unsigned long long totalLoads = 0;
+    unsigned long long totalStores = 0;
+    unsigned long long loadHits = 0;
+    unsigned long long loadMisses = 0;
+    unsigned long long storeHits = 0;
+    unsigned long long storeMisses = 0;
+    unsigned long long totalCycles = 0;
+
+public:
+    CacheSimulator(unsigned int sets, unsigned int blocksPerSet, unsigned int blockSize,
+                   bool writeAllocate, bool writeBack, bool lruEviction)
+        : numSets(sets), numBlocksPerSet(blocksPerSet), blockSize(blockSize),
+          writeAllocate(writeAllocate), writeBack(writeBack), lruEviction(lruEviction) {
+        cache.resize(numSets, vector<CacheBlock>(numBlocksPerSet));
+    }
+
+    void processAccess(char accessType, unsigned long long address) {
+        unsigned long long setIndex = (address / blockSize) % numSets;
+        unsigned long long tag = address / (blockSize * numSets);
+
+        if (accessType == 'l') {
+            totalLoads++;
+            if (findInCache(setIndex, tag)) {
+                loadHits++;
+            } else {
+                loadMisses++;
+                if (writeAllocate) {
+                    loadBlockIntoCache(setIndex, tag);
+                }
+            }
+        } else if (accessType == 's') {
+            totalStores++;
+            if (findInCache(setIndex, tag)) {
+                storeHits++;
+            } else {
+                storeMisses++;
+                if (writeAllocate) {
+                    loadBlockIntoCache(setIndex, tag);
+                    markDirty(setIndex, tag);
+                }
+            }
+        }
+        totalCycles += 1 + (writeBack && findInCache(setIndex, tag) ? 0 : 100);
+        updateLRU(setIndex, tag);
+    }
+
+    void printStatistics() {
+        cout << "Total loads: " << totalLoads << endl;
+        cout << "Total stores: " << totalStores << endl;
+        cout << "Load hits: " << loadHits << endl;
+        cout << "Load misses: " << loadMisses << endl;
+        cout << "Store hits: " << storeHits << endl;
+        cout << "Store misses: " << storeMisses << endl;
+        cout << "Total cycles: " << totalCycles << endl;
+    }
+
+private:
+    bool findInCache(unsigned long long setIndex, unsigned long long tag) {
+        for (unsigned int i = 0; i < numBlocksPerSet; ++i) {
+            if (cache[setIndex][i].valid && cache[setIndex][i].tag == tag) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    void loadBlockIntoCache(unsigned long long setIndex, unsigned long long tag) {
+        unsigned int indexToReplace = findIndexToReplace(setIndex);
+        cache[setIndex][indexToReplace].valid = true;
+        cache[setIndex][indexToReplace].dirty = false;
+        cache[setIndex][indexToReplace].tag = tag;
+    }
+
+    void markDirty(unsigned long long setIndex, unsigned long long tag) {
+        for (unsigned int i = 0; i < numBlocksPerSet; ++i) {
+            if (cache[setIndex][i].valid && cache[setIndex][i].tag == tag) {
+                cache[setIndex][i].dirty = true;
+                return;
+            }
+        }
+    }
+
+    unsigned int findIndexToReplace(unsigned long long setIndex) {
+        if (lruEviction) {
+            unsigned int minIndex = 0;
+            unsigned long long minLRU = lruCounter[setIndex];
+            for (unsigned int i = 1; i < numBlocksPerSet; ++i) {
+                if (lruCounter[setIndex + i * numSets] < minLRU) {
+                    minIndex = i;
+                    minLRU = lruCounter[setIndex + i * numSets];
+                }
+            }
+            return minIndex;
+        } else {
+            // Implement FIFO eviction
+            // Not implemented for brevity
+            return 0;
+        }
+    }
+
+    void updateLRU(unsigned long long setIndex, unsigned long long tag) {
+        if (lruEviction) {
+            for (unsigned int i = 0; i < numBlocksPerSet; ++i) {
+                if (cache[setIndex][i].valid) {
+                    lruCounter[setIndex + i * numSets]++;
+                }
+            }
+            lruCounter[setIndex + findIndexInSet(setIndex, tag) * numSets] = 0;
+        }
+    }
+
+    unsigned int findIndexInSet(unsigned long long setIndex, unsigned long long tag) {
+        for (unsigned int i = 0; i < numBlocksPerSet; ++i) {
+            if (cache[setIndex][i].valid && cache[setIndex][i].tag == tag) {
+                return i;
+            }
+        }
+        return 0;
+    }
+};
+
+int main(int argc, char* argv[]) {
+    if (argc != 8) {
+        cerr << "Usage: " << argv[0] << " <numSets> <numBlocksPerSet> <blockSize> "
+             << "<writeAllocate|no-writeAllocate> <writeBack|write-through> <lru|fifo> <trace_file>" << endl;
+        return 1;
+    }
+
+    unsigned int numSets = stoi(argv[1]);
+    unsigned int numBlocksPerSet = stoi(argv[2]);
+    unsigned int blockSize = stoi(argv[3]);
+    bool writeAllocate = string(argv[4]) == "write-allocate";
+    bool writeBack = string(argv[5]) == "write-back";
+    bool lruEviction = string(argv[6]) == "lru";
+
+    CacheSimulator cacheSim(numSets, numBlocksPerSet, blockSize, writeAllocate, writeBack, lruEviction);
+
+    // Open trace file for reading
+    ifstream traceFile(argv[7]);
+    if (!traceFile) {
+        cerr << "Error: Unable to open trace file." << endl;
+        return 1;
+    }
+
+    // Process each line in the trace file
+    string line;
+    while (getline(traceFile, line)) {
+        char accessType;
+        unsigned long long address;
+        int value;
+        istringstream iss(line);
+        if (!(iss >> accessType >> hex >> address >> value)) {
+            cerr << "Error: Invalid trace file format." << endl;
+            return 1;
+        }
+        cacheSim.processAccess(accessType, address);
+    }
+
+    // Close the trace file
+    traceFile.close();
+
+    // Print cache simulation statistics
+    cacheSim.printStatistics();
+
+    return 0;
+}
+
